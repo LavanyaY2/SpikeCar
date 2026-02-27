@@ -1,0 +1,61 @@
+Using device: cuda
+Starting training for 50 epochs...
+Epoch 1/50 | Train MSE: 8.8912 | Val MSE: 22.7371 | Val MAE: 4.0110s | Val Rel Error: 63.3%
+  >>> Saved Best Model
+Epoch 2/50 | Train MSE: 3.9094 | Val MSE: 16.0947 | Val MAE: 3.1822s | Val Rel Error: 51.5%
+  >>> Saved Best Model
+Epoch 3/50 | Train MSE: 2.9331 | Val MSE: 38.0409 | Val MAE: 5.5452s | Val Rel Error: 100.0%
+Epoch 4/50 | Train MSE: 4.0460 | Val MSE: 17.8335 | Val MAE: 3.4247s | Val Rel Error: 54.0%
+Epoch 5/50 | Train MSE: 3.2731 | Val MSE: 30.4123 | Val MAE: 4.9962s | Val Rel Error: 91.3%
+Epoch 6/50 | Train MSE: 2.6754 | Val MSE: 27.8214 | Val MAE: 4.5991s | Val Rel Error: 77.2%
+Epoch 7/50 | Train MSE: 2.3405 | Val MSE: 15.0932 | Val MAE: 3.2015s | Val Rel Error: 52.2%
+  >>> Saved Best Model
+Epoch 8/50 | Train MSE: 2.4266 | Val MSE: 26.1864 | Val MAE: 4.4565s | Val Rel Error: 75.3%
+Epoch 9/50 | Train MSE: 1.9165 | Val MSE: 8.3709 | Val MAE: 2.5913s | Val Rel Error: 59.1%
+  >>> Saved Best Model
+Epoch 10/50 | Train MSE: 2.2230 | Val MSE: 26.6036 | Val MAE: 4.6237s | Val Rel Error: 82.9%
+Epoch 11/50 | Train MSE: 1.6973 | Val MSE: 8.5602 | Val MAE: 2.6328s | Val Rel Error: 61.0%
+Epoch 12/50 | Train MSE: 1.5007 | Val MSE: 8.6946 | Val MAE: 2.5628s | Val Rel Error: 53.0%
+Epoch 13/50 | Train MSE: 1.2391 | Val MSE: 11.2758 | Val MAE: 3.0367s | Val Rel Error: 78.1%
+Epoch 14/50 | Train MSE: 1.1116 | Val MSE: 13.0564 | Val MAE: 3.0261s | Val Rel Error: 54.7%
+Epoch 15/50 | Train MSE: 1.2451 | Val MSE: 7.7239 | Val MAE: 2.5398s | Val Rel Error: 65.1%
+  >>> Saved Best Model
+Epoch 16/50 | Train MSE: 1.0028 | Val MSE: 9.8904 | Val MAE: 2.8395s | Val Rel Error: 88.0%
+Epoch 17/50 | Train MSE: 1.0691 | Val MSE: 11.4200 | Val MAE: 2.8466s | Val Rel Error: 51.2%
+Epoch 18/50 | Train MSE: 0.9183 | Val MSE: 10.6659 | Val MAE: 2.9362s | Val Rel Error: 92.5%
+Epoch 19/50 | Train MSE: 0.9954 | Val MSE: 12.2083 | Val MAE: 3.0310s | Val Rel Error: 64.0%
+Epoch 20/50 | Train MSE: 0.8691 | Val MSE: 11.9263 | Val MAE: 2.8072s | Val Rel Error: 104.5%
+Epoch 21/50 | Train MSE: 0.8208 | Val MSE: 14.5263 | Val MAE: 3.1014s | Val Rel Error: 113.7%
+Epoch 22/50 | Train MSE: 1.0262 | Val MSE: 10.2051 | Val MAE: 2.6878s | Val Rel Error: 97.1%
+Epoch 23/50 | Train MSE: 0.6650 | Val MSE: 10.2503 | Val MAE: 2.9068s | Val Rel Error: 73.7%
+Epoch 24/50 | Train MSE: 0.7477 | Val MSE: 14.4723 | Val MAE: 3.2819s | Val Rel Error: 69.8%
+Epoch 25/50 | Train MSE: 0.8938 | Val MSE: 10.7074 | Val MAE: 2.9117s | Val Rel Error: 96.3%
+Epoch 26/50 | Train MSE: 0.9321 | Val MSE: 27.2691 | Val MAE: 4.7612s | Val Rel Error: 137.7%
+Epoch 27/50 | Train MSE: 0.8037 | Val MSE: 19.4205 | Val MAE: 3.9094s | Val Rel Error: 96.9%
+Epoch 28/50 | Train MSE: 0.6563 | Val MSE: 21.7193 | Val MAE: 4.1653s | Val Rel Error: 112.9%
+Epoch 29/50 | Train MSE: 0.5695 | Val MSE: 14.2485 | Val MAE: 3.3730s | Val Rel Error: 97.4%
+Epoch 30/50 | Train MSE: 0.6615 | Val MSE: 11.2390 | Val MAE: 2.5058s | Val Rel Error: 98.0%
+Epoch 31/50 | Train MSE: 1.3142 | Val MSE: 13.3431 | Val MAE: 3.0984s | Val Rel Error: 108.9%
+Epoch 32/50 | Train MSE: 0.7326 | Val MSE: 15.9476 | Val MAE: 3.1744s | Val Rel Error: 118.5%
+Epoch 33/50 | Train MSE: 0.7137 | Val MSE: 27.0627 | Val MAE: 4.7111s | Val Rel Error: 119.4%
+Epoch 34/50 | Train MSE: 1.5423 | Val MSE: 17.0344 | Val MAE: 3.3584s | Val Rel Error: 52.5%
+Epoch 35/50 | Train MSE: 0.6726 | Val MSE: 9.2474 | Val MAE: 2.7948s | Val Rel Error: 80.5%
+Epoch 36/50 | Train MSE: 0.8760 | Val MSE: 14.1740 | Val MAE: 3.4083s | Val Rel Error: 96.2%
+Epoch 37/50 | Train MSE: 0.5592 | Val MSE: 12.6001 | Val MAE: 2.9674s | Val Rel Error: 105.7%
+Epoch 38/50 | Train MSE: 0.5412 | Val MSE: 12.6184 | Val MAE: 2.9531s | Val Rel Error: 101.6%
+Epoch 39/50 | Train MSE: 0.6730 | Val MSE: 18.0812 | Val MAE: 3.5083s | Val Rel Error: 125.0%
+Epoch 40/50 | Train MSE: 0.5268 | Val MSE: 12.5523 | Val MAE: 3.0853s | Val Rel Error: 66.1%
+Epoch 41/50 | Train MSE: 0.5150 | Val MSE: 18.5861 | Val MAE: 3.7191s | Val Rel Error: 81.9%
+Epoch 42/50 | Train MSE: 0.4424 | Val MSE: 14.3996 | Val MAE: 3.1928s | Val Rel Error: 58.8%
+Epoch 43/50 | Train MSE: 0.4857 | Val MSE: 29.8743 | Val MAE: 4.6685s | Val Rel Error: 156.9%
+Epoch 44/50 | Train MSE: 0.5128 | Val MSE: 20.3167 | Val MAE: 3.6295s | Val Rel Error: 129.9%
+Epoch 45/50 | Train MSE: 0.4576 | Val MSE: 8.7700 | Val MAE: 2.3896s | Val Rel Error: 90.0%
+Epoch 46/50 | Train MSE: 0.4351 | Val MSE: 15.7317 | Val MAE: 3.4850s | Val Rel Error: 85.5%
+Epoch 47/50 | Train MSE: 0.3705 | Val MSE: 9.0855 | Val MAE: 2.4760s | Val Rel Error: 87.1%
+Epoch 48/50 | Train MSE: 0.3664 | Val MSE: 23.7390 | Val MAE: 4.0619s | Val Rel Error: 139.7%
+Epoch 49/50 | Train MSE: 0.4242 | Val MSE: 9.8909 | Val MAE: 2.7198s | Val Rel Error: 54.8%
+Epoch 50/50 | Train MSE: 0.3795 | Val MSE: 12.7806 | Val MAE: 3.0494s | Val Rel Error: 96.3%
+
+Training Complete in 103.8 minutes.
+Best Val Loss: 7.7239
+Training curve saved to models/training_curve.png
