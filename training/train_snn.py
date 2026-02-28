@@ -14,6 +14,8 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 import time
 import optuna
+import torch.nn.functional as F
+from tqdm import tqdm
 
 # -----------------------------------------------------------------------------
 # 1. Dataset Class
@@ -34,6 +36,8 @@ class TTCDataset(Dataset):
         # Input shape: (5, 480, 640) -> represents 5 time steps
         x = torch.from_numpy(self.X[idx].copy()).float()
         y = torch.tensor([self.y[idx]]).float()
+
+        x = F.interpolate(x.unsqueeze(0), size=(240, 320), mode='bilinear', align_corners=False).squeeze(0)
         return x, y
 
 # -----------------------------------------------------------------------------
@@ -184,14 +188,14 @@ def objective(trial):
     ALPHA = trial.suggest_float("alpha", 1.0, 4.0)
     DROPOUT = trial.suggest_float("dropout_rate", 0.1, 0.6)
     V_THRESH = trial.suggest_float("v_thresh", 0.5, 1.5)
-    BATCH_SIZE = 4
+    BATCH_SIZE = 8
     
     # Data Loaders
     train_ds = TTCDataset('data/processed/X_train.npy', 'data/processed/y_train.npy')
     val_ds = TTCDataset('data/processed/X_val.npy', 'data/processed/y_val.npy')
     
-    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
-    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
+    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=2)
+    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=2)
     
     # Model Init
     model = SpikeCarSNN(alpha=ALPHA, dropout_rate=DROPOUT, v_thresh=V_THRESH).to(device)
@@ -211,7 +215,7 @@ def objective(trial):
         # --- Training ---
         model.train()
         train_loss_epoch = 0
-        for x, y in train_loader:
+        for x, y in tqdm(train_loader, desc=f"Epoch {epoch+1}/{EPOCHS} [Train]", leave=False):
             x, y = x.to(device), y.to(device)
             
             # Reset neuron states before every batch! Important for SNNs.
@@ -236,7 +240,7 @@ def objective(trial):
         val_rel_error_sum = 0
 
         with torch.no_grad():
-            for x, y in val_loader:
+            for x, y in tqdm(val_loader, desc=f"Epoch {epoch+1}/{EPOCHS} [Val]", leave=False):
                 x, y = x.to(device), y.to(device)
                 functional.reset_net(model) # Reset states
                 
@@ -280,7 +284,7 @@ def objective(trial):
             print("  >>> Saved Best Model")
             
     total_time = time.time() - start_time
-    print(f"\nTraining Complete in {total_time/60:.1f} minutes.")
+    print(f"\nTrial {trial.number} Complete in {total_time/60:.1f} minutes.")
     print(f"Best Val Loss: {best_val_loss:.4f}")
     
     # Plot Training Curve
@@ -289,9 +293,10 @@ def objective(trial):
     plt.plot(val_losses, label='Val Loss')
     plt.xlabel('Epoch')
     plt.ylabel('MSE Loss')
-    plt.title('SNN Training Curve')
+    plt.title(f'SNN Training Curve - Trial {trial.number}')
     plt.legend()
     plt.savefig(f'models/training_curve_trial_{trial.number}.png')
+    plt.close()
     print(f"Training curve saved to models/training_curve_trial_{trial.number}.png")
 
     return best_val_loss
