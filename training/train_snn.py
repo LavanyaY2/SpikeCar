@@ -154,11 +154,26 @@ class SpikeCarSNN(nn.Module):
         return self.readout_lif.v
 
 # -----------------------------------------------------------------------------
+# 3. Device Selection Helper
+# -----------------------------------------------------------------------------
+def get_device():
+    """
+    Priority: CUDA → MPS → CPU
+    MPS requires macOS 12.3+ and PyTorch 1.12+
+    """
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        return torch.device("mps")
+    else:
+        return torch.device("cpu")
+    
+# -----------------------------------------------------------------------------
 # 3. Training Loop
 # -----------------------------------------------------------------------------
 def objective(trial):
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = get_device()
     print(f"Using device: {device}")
     
     Path("models").mkdir(exist_ok=True)
@@ -260,7 +275,8 @@ def objective(trial):
         # Save Best Model (Based on MSE)
         if avg_val_mse < best_val_loss:
             best_val_loss = avg_val_mse
-            torch.save(model.state_dict(), f"models/best_snn_trial_{trial.number}.pth")
+            # torch.save(model.state_dict(), f"models/best_snn_trial_{trial.number}.pth")
+            torch.save({k: v.cpu() for k, v in model.state_dict().items()}, f"models/best_snn_trial_{trial.number}.pth")
             print("  >>> Saved Best Model")
             
     total_time = time.time() - start_time
