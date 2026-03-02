@@ -142,10 +142,10 @@ THIS_DIR = Path(__file__).resolve().parent
 parser = argparse.ArgumentParser('Samsung DVS Viewer + TTC Inference')
 parser.add_argument('--source', metavar='FILE', type=str, default=None,
                     help='event file to view')
-parser.add_argument('--gain', type=float, default=6.0,
-                    help='accumulator to image gain')
-parser.add_argument('--decay', type=float, default=0.0,
-                    help='accumulator decay per tick (0 clears every tick)')
+parser.add_argument('--timesurface_tau', default=0.01, type=float,
+                    help='filter time for event image view (default=0.01)')
+parser.add_argument('--timesurface_gain', default=1.0, type=float,
+                    help='magnitude of event image view (default=1)')
 parser.add_argument('--weights', type=str, default=str(THIS_DIR / 'best_snn_trial_25.pth'),
                     help='path to trained SNN weights')
 parser.add_argument('--collision_ttc', type=float, default=1.5,
@@ -178,14 +178,14 @@ class MainView:
         self.has_image = False
         self.bind_keys(self.root)
 
-        self.app_image = EventView(self, self.frame1)
+        self.app_image = Timesurface(self, self.frame1)
 
         self.inferencer = RealTimeTTCInferencer(
             weights_path=args.weights,
             collision_threshold=args.collision_ttc,
         )
         self.bin_buffer = deque(maxlen=5)
-        self.prev_event_frame = None
+        self.prev_ts_frame = None
         self.last_prediction = None
         self.last_event_count = 0
         self.last_tick_time = time.time()
@@ -210,25 +210,20 @@ class MainView:
             self.has_image = False
 
     def bind_keys(self, window):
-        window.bind('<Up>', self.gain_up)
-        window.bind('<Down>', self.gain_down)
+        window.bind('<Up>', self.image_gain_up)
+        window.bind('<Down>', self.image_gain_down)
         window.bind('<Escape>', self.quit)
 
-    def gain_up(self, event=None):
-        args.gain *= 1.2
-        if lib.active:
-            lib.set_params(gain=args.gain)
+    def image_gain_up(self, event=None):
+        args.timesurface_gain *= 1.2
 
-    def gain_down(self, event=None):
-        args.gain /= 1.2
-        if lib.active:
-            lib.set_params(gain=args.gain)
+    def image_gain_down(self, event=None):
+        args.timesurface_gain /= 1.2
 
     def quit(self, event):
         self.root.destroy()
 
     def set_source(self):
-        lib.start_baseline(gain=args.gain, decay=args.decay)
         lib.lib.initialize_camera()
         lib.lib.start_camera()
         self.root.after(10, self.pull_camera)
@@ -248,18 +243,16 @@ class MainView:
         if dt > 0:
             self.tick_fps = 1.0 / dt
 
-        lib.tick(dt)
-        if lib.active and lib.state_ptr is not None:
-            self.last_event_count = int(lib.state_ptr.contents.last_event_count)
-
-        if lib.active and self.inferencer.enabled:
-            current_frame = lib.image.astype(np.float32, copy=True)
-            if self.prev_event_frame is None:
-                delta_frame = np.zeros_like(current_frame, dtype=np.float32)
+        if lib.timesurface_active and self.inferencer.enabled:
+            current_ts = lib.timesurface.copy()
+            if self.prev_ts_frame is None:
+                delta_ts = np.zeros_like(current_ts, dtype=np.float32)
             else:
-                delta_frame = (current_frame - self.prev_event_frame).astype(np.float32, copy=False)
-            self.prev_event_frame = current_frame
-            self.bin_buffer.append(delta_frame)
+                # Training bins represent activity in short windows; use interval delta
+                # instead of feeding cumulative time-surface snapshots.
+                delta_ts = (current_ts - self.prev_ts_frame).astype(np.float32, copy=False)
+            self.prev_ts_frame = current_ts
+            self.bin_buffer.append(delta_ts)
 
             if len(self.bin_buffer) == 5:
                 sample = np.stack(self.bin_buffer, axis=0)
@@ -297,7 +290,7 @@ class MainView:
         )
 
 
-class EventView:
+class Timesurface:
     def __init__(self, app, frame):
         self.app = app
 
@@ -309,7 +302,13 @@ class EventView:
         app.root.after(args.tick_ms, self.update)
 
     def update(self):
-        if self.app.has_image:
+        if not self.app.has_image:
+            if lib.timesurface_active:
+                lib.stop_timesurface()
+        else:
+            if not lib.timesurface_active:
+                lib.init_timesurface(timesurface_tau=args.timesurface_tau)
+
             img = self.get_image()
             img = img.resize((self.image.width(), self.image.height()))
             self.image = ImageTk.PhotoImage(image=img)
@@ -323,10 +322,10 @@ class EventView:
         self.label.config(image=self.image)
 
     def get_image(self):
-        if not lib.active or lib.image is None:
-            img = np.zeros((480, 640), dtype=np.uint8)
+        if not lib.timesurface_active:
+            img = np.zeros((480, 640), dtype=np.uint8) + 128
         else:
-            img = lib.image.copy()
+            img = np.clip(lib.timesurface * args.timesurface_gain + 128, 0, 255).astype(np.uint8)
         img = Image.fromarray(img, mode='L')
         return img
 
