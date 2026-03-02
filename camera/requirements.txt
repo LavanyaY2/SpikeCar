@@ -1,0 +1,5 @@
+# Python deps used by minimal/view.py
+numpy==2.4.2
+pillow==12.1.0
+torch==2.10.0
+spikingjelly==0.0.0.0.14
