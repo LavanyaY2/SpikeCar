@@ -1,7 +1,7 @@
 import argparse
 import tkinter as tk
 from tkinter import ttk
-from collections import deque
+# from collections import deque
 from pathlib import Path
 import time
 
@@ -122,9 +122,9 @@ class RealTimeTTCInferencer:
             return None
 
         x = bins_5x480x640.astype(np.float32, copy=False)
-        scale = float(np.abs(x).max())
-        if scale > 0:
-            x = x / scale
+        # scale = float(np.abs(x).max())
+        # if scale > 0:
+        #     x = x / scale
 
         tensor = torch.from_numpy(x).unsqueeze(0).to(self.device)
         tensor = F.interpolate(tensor, size=(240, 320), mode='bilinear', align_corners=False)
@@ -148,7 +148,7 @@ parser.add_argument('--timesurface_gain', default=1.0, type=float,
                     help='magnitude of event image view (default=1)')
 parser.add_argument('--weights', type=str, default=str(THIS_DIR / 'best_snn_trial_25.pth'),
                     help='path to trained SNN weights')
-parser.add_argument('--collision_ttc', type=float, default=1.5,
+parser.add_argument('--collision_ttc', type=float, default=2.5,
                     help='collision warning threshold in seconds')
 parser.add_argument('--tick_ms', type=int, default=50,
                     help='processing/viewer tick period in milliseconds')
@@ -157,6 +157,21 @@ args = parser.parse_args()
 
 lib = dvs.Library(width=640, height=480)
 
+# for raw data stuff
+def create_timesurface(events, start_time, end_time, height, width, tau=0.01):
+    time_surface = np.zeros((height, width), dtype=np.float32)
+    mask = (events['t'] >= start_time) & (events['t'] < end_time)
+    indices = np.where(mask)[0]
+    if len(indices) == 0:
+        return time_surface
+    t_arr = events['t'][indices].astype(np.float64)
+    x_arr = events['x'][indices].astype(np.int32)
+    y_arr = events['y'][indices].astype(np.int32)
+    p_arr = events['p'][indices]
+    decay = np.exp(-(end_time - t_arr) / (tau * 1e6))
+    signed_decay = np.where(p_arr > 0, decay, -decay).astype(np.float32)
+    np.add.at(time_surface, (y_arr, x_arr), signed_decay)
+    return time_surface
 
 class MainView:
     def __init__(self):
@@ -184,9 +199,11 @@ class MainView:
             weights_path=args.weights,
             collision_threshold=args.collision_ttc,
         )
-        self.bin_buffer = deque(maxlen=5)
-        self.prev_ts_frame = None
+        # commenting these out
+        # self.bin_buffer = deque(maxlen=5)
+        # self.prev_ts_frame = None
         self.last_prediction = None
+        self.smoothed_ttc = None
         self.last_event_count = 0
         self.last_tick_time = time.time()
         self.tick_fps = 0.0
@@ -244,20 +261,39 @@ class MainView:
             self.tick_fps = 1.0 / dt
 
         if lib.timesurface_active and self.inferencer.enabled:
-            current_ts = lib.timesurface.copy()
-            if self.prev_ts_frame is None:
-                delta_ts = np.zeros_like(current_ts, dtype=np.float32)
-            else:
-                # Training bins represent activity in short windows; use interval delta
-                # instead of feeding cumulative time-surface snapshots.
-                delta_ts = (current_ts - self.prev_ts_frame).astype(np.float32, copy=False)
-            self.prev_ts_frame = current_ts
-            self.bin_buffer.append(delta_ts)
+            raw_events = lib.get_recent_events()
 
-            if len(self.bin_buffer) == 5:
-                sample = np.stack(self.bin_buffer, axis=0)
+            if raw_events is not None and len(raw_events['t']) >= 2:
+                t_end   = int(raw_events['t'][-1])
+                t_start = t_end - 50_000  # 50ms window
+                bin_duration_us = 10_000
+
+                bins = []
+                for i in range(5):
+                    bin_start = t_start + i * bin_duration_us
+                    bin_end   = bin_start + bin_duration_us
+                    ts_bin = create_timesurface(
+                        raw_events, bin_start, bin_end, 480, 640, tau=0.01
+                    )
+                    bins.append(ts_bin)
+
+                sample = np.stack(bins, axis=0)  # (5, 480, 640)
+
+                scale = np.abs(sample).max()
+                if scale > 0:
+                    sample = sample / scale
+
                 pred_ttc = self.inferencer.predict(sample)
-                self.last_prediction = pred_ttc
+
+                # ---- Exponential moving average smoothing ----
+                ALPHA = 0.3
+                if self.smoothed_ttc is None:
+                    self.smoothed_ttc = pred_ttc
+                else:
+                    self.smoothed_ttc = ALPHA * pred_ttc + (1 - ALPHA) * self.smoothed_ttc
+
+                self.last_prediction = self.smoothed_ttc
+                # ----------------------------------------------
 
         self.update_status()
         self.root.after(args.tick_ms, self.tick)
@@ -272,7 +308,7 @@ class MainView:
                 text=(
                     f'fps: {self.tick_fps:.1f} | '
                     f'events: {self.last_event_count} | '
-                    f'buffering temporal bins ({len(self.bin_buffer)}/5)'
+                    f'waiting for events...'
                 )
             )
             return
