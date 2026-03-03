@@ -25,6 +25,15 @@ typedef struct
 
 timesurface *ts = NULL;
 
+// To store raw event data to use later
+#define EVENT_BUFFER_SIZE 1000000
+
+static int32_t evt_buf_t[EVENT_BUFFER_SIZE];
+static uint16_t evt_buf_x[EVENT_BUFFER_SIZE];
+static uint16_t evt_buf_y[EVENT_BUFFER_SIZE];
+static int8_t evt_buf_p[EVENT_BUFFER_SIZE];
+static uint32_t evt_buf_count = 0;
+
 void timesurfaceInit(timesurface *ts, float_t tau)
 {
 	ts->magnitude = calloc(width * height, sizeof(float_t));
@@ -239,6 +248,15 @@ int update_camera()
 
 				processEvent(ts, x, y, p);
 
+				// store raw events data for later use
+				if (evt_buf_count < EVENT_BUFFER_SIZE) {
+					evt_buf_t[evt_buf_count] = ts;
+					evt_buf_x[evt_buf_count] = x;
+					evt_buf_y[evt_buf_count] = y;
+					evt_buf_p[evt_buf_count] = (int8_t)p;
+					evt_buf_count++;
+				}
+
 				eventCount++;
 				last_timestamp = ts;
 			}
@@ -253,6 +271,19 @@ int update_camera()
 	caerEventPacketContainerFree(packetContainer);
 
 	return eventCount;
+}
+
+// Helper to retrieve raw event data buffer for later use
+uint32_t get_event_buffer(int32_t **out_t, uint16_t **out_x,
+                           uint16_t **out_y, int8_t **out_p)
+{
+    *out_t = evt_buf_t;
+    *out_x = evt_buf_x;
+    *out_y = evt_buf_y;
+    *out_p = evt_buf_p;
+    uint32_t count = evt_buf_count;
+    evt_buf_count = 0;   // flush after reading
+    return count;
 }
 
 void shutdown()
