@@ -13,306 +13,347 @@ import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
 import time
-import optuna
 import torch.nn.functional as F
 from tqdm import tqdm
 
+
+# -----------------------------------------------------------------------------
+# Hyperparameters — tuned for EvTTC TTC regression
+# -----------------------------------------------------------------------------
+CONFIG = {
+    "lr":           1e-4,    # Adam learning rate
+    "weight_decay": 1e-4,    # L2 regularization
+    "alpha":        2.0,     # ATan surrogate gradient sharpness
+    "dropout_rate": 0.3,     # Dropout before FC layers
+    "v_thresh":     1.0,     # LIF spike threshold
+    "huber_delta":  1.0,     # Huber loss delta (seconds) — transition point between L1 and L2
+    "batch_size":   16,
+    "epochs":       5,
+    "time_steps":   5,
+}
+
 # -----------------------------------------------------------------------------
 # 1. Dataset Class
-# To create a custom PyTorch dataset
 # -----------------------------------------------------------------------------
 class TTCDataset(Dataset):
-    def __init__(self, X_path, y_path):
-        # Load data
+    def __init__(self, X_path, y_path, target_h=240, target_w=320):
         self.X = np.load(X_path, mmap_mode='r')
         self.y = np.load(y_path)
-        
-    def __len__(self):
-        # To determine end of an epoch
-        return len(self.y)
-    
-    def __getitem__(self, idx):
-        # Load a sample and convert to tensor
-        # Input shape: (5, 480, 640) -> represents 5 time steps
-        x = torch.from_numpy(self.X[idx].copy()).float()
-        y = torch.tensor([self.y[idx]]).float()
+        self.target_h = target_h
+        self.target_w = target_w
 
+    def __len__(self):
+        return len(self.y)
+
+    def __getitem__(self, idx):
+        x = torch.from_numpy(self.X[idx].copy()).float()
         x = F.interpolate(x.unsqueeze(0), size=(240, 320), mode='bilinear', align_corners=False).squeeze(0)
+        y = torch.tensor([self.y[idx]]).float()
         return x, y
+
 
 # -----------------------------------------------------------------------------
 # 2. SNN Architecture
 # -----------------------------------------------------------------------------
 class SpikeCarSNN(nn.Module):
+
+    """
+    Input:  (B, T=5, 240, 320)
+    Output: scalar TTC prediction per sample in seconds
+
+    Spatial flow:
+      Block 1: (B, 1,   240, 320) -> pool -> (B, 16,  120, 160)
+      Block 2: (B, 16,  120, 160) -> pool -> (B, 32,   60,  80)
+      Block 3: (B, 32,   60,  80) -> pool -> (B, 64,   30,  40)
+      Block 4: (B, 64,   30,  40) -> pool -> (B, 128,  15,  20)
+      GAP:     (B, 128, 15,  20)  -> GAP  -> (B, 128)
+      FC1:     (B, 128) -> (B, 64)
+      FC2:     (B, 64)  -> (B, 1)
+      Readout: accumulates membrane voltage over T steps -> scalar TTC
+    """
+
     def __init__(self, time_steps=5, alpha=2.0, dropout_rate=0.3, v_thresh=1.0):
         super().__init__()
         self.T = time_steps
-        
-        # Surrogate gradient (allows backprop through spikes)
-        """
-        Why surrogate gradients?
-        - Standard ANNs use smooth activation functions that have well-defined derivatives
-        - In SNNs, neuron outputs are spikes, modeled by a heaviside step function
-        - The derivative for that is 0 everywhere, undefined at the threshold
-        - Therefore, the gradients vanish
-        - A surrogate gradient is a smooth, fake derivative used during backprop
-        - Shape of the surrogate (a tunable hyperparam) matters to make sure gradients don't vanish/explode
-        """
-        # Replaces spike with an inverse tangent during backprop
-        # ATan has "heavy tails" - spikes with voltage far away from the threshold will still have non-zero gradient
-        surrogate_gradient = surrogate.ATan(alpha=alpha)
 
-        """
-        General layer structure
-            - Convolutional layer with a kernel size of 3 = basically a 3x3 filter to find basic patterns
-            - BatchNorm to normalize values to prevent vanishing/exploding gradients
-            - LIFNode (Leaky integrate-and-fire) - has continuous internal memory; collects scattered events and integrates them together
-        """
-        # Layer 1: 640x480 -> 240x320
-        self.conv1 = layer.Conv2d(1, 16, kernel_size=3, stride=1, padding=1, bias=False)
-        self.batch_norm1 = layer.BatchNorm2d(16)
-        # Use the dynamic v_thresh in the neurons
-        self.lif1 = neuron.ParametricLIFNode(init_tau=2.0, v_threshold=v_thresh, detach_reset=True, surrogate_function=surrogate_gradient)
+        def make_plif():
+            # ParametricLIF: tau is a learnable parameter per neuron
+            # step_mode='s' matches our explicit time loop in forward()
+            return neuron.ParametricLIFNode(
+                init_tau=2.0,
+                v_threshold=v_thresh,
+                detach_reset=True,
+                surrogate_function=surrogate.ATan(alpha=alpha),
+                step_mode='s'
+            )
 
-        # Layer 2: 240x320 -> 120x160
-        self.conv2 = layer.Conv2d(16, 32, kernel_size=3, stride=1, padding=1, bias=False)
-        self.batch_norm2 = layer.BatchNorm2d(32)
-        self.lif2 = neuron.ParametricLIFNode(init_tau=2.0, v_threshold=v_thresh, detach_reset=True, surrogate_function=surrogate_gradient)
+        self.conv1       = layer.Conv2d(1, 16, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = layer.BatchNorm2d(16)
+        self.lif1        = make_plif()
 
-        # Layer 3: 120x160 -> 60x80
-        self.conv3 = layer.Conv2d(32, 64, kernel_size=3, stride=1, padding=1, bias=False)
-        self.batch_norm3 = layer.BatchNorm2d(64)
-        self.lif3 = neuron.ParametricLIFNode(init_tau=2.0, v_threshold=v_thresh, detach_reset=True, surrogate_function=surrogate_gradient)
+        self.conv2       = layer.Conv2d(16, 32, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = layer.BatchNorm2d(32)
+        self.lif2        = make_plif()
 
-        # Layer 4: 60x80 -> 30x40
-        self.conv4 = layer.Conv2d(64, 128, kernel_size=3, stride=1, padding=1, bias=False)
-        self.batch_norm4 = layer.BatchNorm2d(128)
-        self.lif4 = neuron.ParametricLIFNode(init_tau=2.0, v_threshold=v_thresh, detach_reset=True, surrogate_function=surrogate_gradient)
+        self.conv3       = layer.Conv2d(32, 64, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn3 = layer.BatchNorm2d(64)
+        self.lif3        = make_plif()
 
-        # Max pooling layer
+        self.conv4       = layer.Conv2d(64, 128, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn4 = layer.BatchNorm2d(128)
+        self.lif4        = make_plif()
+
         self.pool = layer.MaxPool2d(kernel_size=2, stride=2)
+        self.gap = layer.AdaptiveAvgPool2d((1, 1))
 
-        # Global Average Pooling to fix the matrix size for the Linear layer
-        self.global_average_pooling = layer.AdaptiveAvgPool2d((1, 1))
+        self.dropout                = layer.Dropout(dropout_rate)
 
-        # Add dropout layer to prevent model from memorizing the training data
-        self.dropout = layer.Dropout(dropout_rate)
-
-        # Standard fully-connected layer
-        self.fc1 = layer.Linear(128, 64, bias=False)
-
-        # Final spikng neuron layer in the network
-        self.lif5 = neuron.LIFNode(tau=2.0, detach_reset=True)
-
-        # Final layer - shrinks 64 spikes from last layer into 1 output
-        self.fc2 = layer.Linear(64, 1, bias=False)
-
-        self.readout_lif = neuron.LIFNode(tau=2.0, v_threshold=float('inf'))
-
-        # Final output layer is NOT spiking because we need a continuous regression value (TTC)
-        # We will accumulate the membrane potential or simply sum the output over time.
+        self.fc1                    = layer.Linear(128, 64, bias=False)
+        self.lif5                   = neuron.LIFNode(tau=2.0, detach_reset=True, step_mode='s')
         
+        self.fc2                    = layer.Linear(64, 1, bias=False)
+
+        # Readout: v_thresh=inf means it NEVER fires — only accumulates voltage
+        # This gives us a continuous analog output suitable for regression
+        self.readout = neuron.LIFNode(
+            tau=2.0,
+            v_threshold=float('inf'),
+            detach_reset=True,
+            step_mode='s'
+        )
 
     def forward(self, x):
-        # x shape: (Batch, T, Height, Width) -> (Batch, 5, 480, 640)
-        # In the data, the 5 channels are the 5 time bins
-        # We treat the channels as time steps (T=5)
-        # We need to reshape to (T, Batch, 1, H, W) for SpikingJelly logic if using functional.multi_step_forward
-        # But here we'll write the loop explicitly for clarity.
-        
-        batch_size = x.shape[0]
-        
-        # Loop over time steps (Direct Training BPTT happens here automatically by PyTorch)
+        # x: (B, T, H, W)
+        batch_size  = x.shape[0]
+
         for t in range(self.T):
-            # Extract the t-th bin: (Batch, 1, 480, 640)
-            x_t = x[:, t:t+1, :, :] 
-            
-            # Layer 1
-            out = self.lif1(self.batch_norm1(self.conv1(x_t)))
-            # Layer 2
-            out = self.lif2(self.batch_norm2(self.conv2(out)))
-            # Layer 3
-            out = self.lif3(self.batch_norm3(self.conv3(out)))
-            # Layer 4
-            out = self.lif4(self.batch_norm4(self.conv4(out)))
-            
-            # Pooling & Flatten
-            out = self.pool(out) # (Batch, 128, 1, 1)
-            out = self.global_average_pooling(out)
-            out = out.view(batch_size, -1) # (Batch, 128)
+            x_t = x[:, t:t+1, :, :] # (B, 1, H, W)
 
-            # Apply dropout before the fully connected layer
+            # Each block: conv -> BN -> LIF -> pool
+            out = self.pool(self.lif1(self.bn1(self.conv1(x_t)))) # (B, 16, 120, 160)
+            out = self.pool(self.lif2(self.bn2(self.conv2(out))))   # (B, 32,  60,  80)
+            out = self.pool(self.lif3(self.bn3(self.conv3(out))))   # (B, 64,  30,  40)
+            out = self.pool(self.lif4(self.bn4(self.conv4(out))))   # (B, 128, 15,  20)
+
+            out = self.gap(out).view(batch_size, -1)  # (B, 128)
             out = self.dropout(out)
-            
-            # FC 1
-            out = self.lif5(self.fc1(out))
-            
-            # FC 2 (Output)
-            # We don't spike here. We sum the continuous output over time.
-            out = self.fc2(out)
+            out = self.lif5(self.fc1(out))            # (B, 64)
+            out = self.fc2(out)                       # (B, 1)
 
-            # The LIFNode accumulates the voltage across the time steps
-            out = self.readout_lif(out)
-            
-        # Return the accumulated voltage of the final neuron as the predicted TTC
-        return self.readout_lif.v
+            # Feed into readout — side effect charges .v, return value (always 0) discarded
+            self.readout(out)
+
+        # Membrane voltage = TTC prediction accumulated over all T steps
+        return self.readout.v  # (B, 1)
+
 
 # -----------------------------------------------------------------------------
-# 3. Device Selection Helper
+# 3. Device
 # -----------------------------------------------------------------------------
 def get_device():
-    """
-    Priority: CUDA → MPS → CPU
-    MPS requires macOS 12.3+ and PyTorch 1.12+
-    """
     if torch.cuda.is_available():
         return torch.device("cuda")
     elif torch.backends.mps.is_available():
         return torch.device("mps")
-    else:
-        return torch.device("cpu")
-    
-# -----------------------------------------------------------------------------
-# 3. Training Loop
-# -----------------------------------------------------------------------------
-def objective(trial):
+    return torch.device("cpu")
 
+# -----------------------------------------------------------------------------
+# 4. Training
+# -----------------------------------------------------------------------------
+def train(config):
     device = get_device()
-    print(f"Using device: {device}")
-    
+    print(f"Device     : {device}")
+    print(f"Config     : {config}\n")
     Path("models").mkdir(exist_ok=True)
-    
-    # Have optuna pick hyperparameters for this specific run
-    LR = trial.suggest_float("lr", 1e-5, 1e-3, log=True)
-    WEIGHT_DECAY = trial.suggest_float("weight_decay", 1e-5, 1e-2, log=True)
-    ALPHA = trial.suggest_float("alpha", 1.0, 4.0)
-    DROPOUT = trial.suggest_float("dropout_rate", 0.1, 0.6)
-    V_THRESH = trial.suggest_float("v_thresh", 0.5, 1.5)
-    BATCH_SIZE = 8
-    
-    # Data Loaders
-    train_ds = TTCDataset('data/processed/X_train.npy', 'data/processed/y_train.npy')
-    val_ds = TTCDataset('data/processed/X_val.npy', 'data/processed/y_val.npy')
-    
-    train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=2)
-    val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=2)
-    
-    # Model Init
-    model = SpikeCarSNN(alpha=ALPHA, dropout_rate=DROPOUT, v_thresh=V_THRESH).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY) 
-    criterion = nn.MSELoss()
-    
-    best_val_loss = float('inf')
-    train_losses = []
-    val_losses = []
 
-    EPOCHS = 15
-    
-    print(f"Starting training for {EPOCHS} epochs...")
-    start_time = time.time()
-    
-    for epoch in range(EPOCHS):
-        # --- Training ---
+    # --- Data ---
+    train_ds = TTCDataset('data/processed/X_train.npy', 'data/processed/y_train.npy')
+    val_ds   = TTCDataset('data/processed/X_val.npy',   'data/processed/y_val.npy')
+
+    train_loader = DataLoader(
+        train_ds, batch_size=config["batch_size"],
+        shuffle=True, num_workers=2, pin_memory=True
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=config["batch_size"],
+        shuffle=False, num_workers=2, pin_memory=True
+    )
+
+    print(f"Train samples : {len(train_ds)}")
+    print(f"Val samples   : {len(val_ds)}")
+    print(f"Train batches : {len(train_loader)}")
+    print(f"Val batches   : {len(val_loader)}\n")
+
+    # --- Model ---
+    model = SpikeCarSNN(
+        time_steps   = config["time_steps"],
+        alpha        = config["alpha"],
+        dropout_rate = config["dropout_rate"],
+        v_thresh     = config["v_thresh"],
+    ).to(device)
+
+    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Model params  : {total_params:,}\n")
+
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=config["lr"],
+        weight_decay=config["weight_decay"]
+    )
+
+    # Cosine annealing: smoothly decays LR to near-zero over all epochs
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=config["epochs"]
+    )
+
+    delta = config["huber_delta"]
+
+    # --- Logging ---
+    history = {
+        "train_loss": [], "val_loss": [],
+        "val_mae": [], "val_rel_err": [],
+        "lr": []
+    }
+    best_val_loss = float('inf')
+    epochs_no_improve = 0
+    EARLY_STOP_PATIENCE = 8  # stop if val loss doesn't improve for 8 epochs
+
+    print("=" * 75)
+    print(f"{'Epoch':>6} | {'Train Loss':>10} | {'Val Loss':>9} | {'Val MAE':>9} | {'Rel Err%':>9} | {'LR':>10}")
+    print("=" * 75)
+
+    total_start = time.time()
+
+    for epoch in range(1, config["epochs"] + 1):
+        epoch_start = time.time()
+
+        # ---- Train ----
         model.train()
-        train_loss_epoch = 0
-        for x, y in tqdm(train_loader, desc=f"Epoch {epoch+1}/{EPOCHS} [Train]", leave=False):
+        train_loss_sum = 0.0
+
+        for x, y in tqdm(train_loader, desc=f"  [Train] Epoch {epoch}", leave=False):
             x, y = x.to(device), y.to(device)
-            
-            # Reset neuron states before every batch! Important for SNNs.
+
+            # Reset all LIF neuron states (membrane voltages + spike traces)
+            # Must happen before EVERY forward pass — neurons are stateful
             functional.reset_net(model)
-            
-            optimizer.zero_grad()
+
+            # Forward Pass
+            optimizer.zero_grad()  # clear gradients from previous batch
             pred = model(x)
-            loss = criterion(pred, y)
+            loss = F.huber_loss(pred, y, delta=delta)
             loss.backward()
+
+            # Clip gradients — prevents exploding gradients through T BPTT steps
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
             optimizer.step()
-            
-            train_loss_epoch += loss.item()
-            
-        avg_train_loss = train_loss_epoch / len(train_loader)
-        train_losses.append(avg_train_loss)
-        
-        # --- Validation ---
+            train_loss_sum += loss.item()
+
+        scheduler.step()
+        avg_train_loss = train_loss_sum / len(train_loader)
+        current_lr     = scheduler.get_last_lr()[0]
+
+        # ---- Validate ----
         model.eval()
-        # Initialize running totals for ALL metrics
-        val_mse_sum = 0
-        val_mae_sum = 0
-        val_rel_error_sum = 0
+        val_loss_sum     = 0.0
+        val_mae_sum      = 0.0
+        val_rel_err_sum  = 0.0
 
         with torch.no_grad():
-            for x, y in tqdm(val_loader, desc=f"Epoch {epoch+1}/{EPOCHS} [Val]", leave=False):
+            for x, y in tqdm(val_loader, desc=f"  [Val]   Epoch {epoch}", leave=False):
                 x, y = x.to(device), y.to(device)
-                functional.reset_net(model) # Reset states
-                
+                functional.reset_net(model)   # reset here too — val batches are independent
+
                 pred = model(x)
 
-                # 1. MSE Loss (Squashes big errors)
-                mse = torch.nn.functional.mse_loss(pred, y)
-                val_mse_sum += mse.item()
-                
-                # 2. MAE Loss (Average seconds off)
-                mae = torch.nn.functional.l1_loss(pred, y)
-                val_mae_sum += mae.item()
-                
-                # 3. Relative Error % (Percentage off from true TTC)
-                rel = torch.mean(torch.abs((y - pred) / y)) * 100
-                val_rel_error_sum += rel.item()
+                val_loss_sum    += F.huber_loss(pred, y, delta=delta).item()
+                val_mae_sum     += F.l1_loss(pred, y).item()
+                val_rel_err_sum += (
+                    torch.mean(torch.abs((y - pred) / y.clamp(min=0.1))).item() * 100
+                )
 
-        # Calculate the average across all batches in the validation set
-        num_batches = len(val_loader)
-        avg_val_mse = val_mse_sum / num_batches
-        avg_val_mae = val_mae_sum / num_batches
-        avg_val_rel_error = val_rel_error_sum / num_batches
-            
-        val_losses.append(avg_val_mse) # Still plotting MSE for the graph
+        n             = len(val_loader)
+        avg_val_loss  = val_loss_sum    / n
+        avg_val_mae   = val_mae_sum     / n
+        avg_val_rel   = val_rel_err_sum / n
+        epoch_time    = time.time() - epoch_start
 
-        # Report validation loss back to Optuna after every epoch
-        trial.report(avg_val_mse, epoch)
+        # Log
+        history["train_loss"].append(avg_train_loss)
+        history["val_loss"].append(avg_val_loss)
+        history["val_mae"].append(avg_val_mae)
+        history["val_rel_err"].append(avg_val_rel)
+        history["lr"].append(current_lr)
 
-        # Allow Optuna stop the run early if loss is spiking too much
-        if trial.should_prune():
-            raise optuna.TrialPruned()
-                
-        # Logging - Now it prints all the metrics!
-        print(f"Epoch {epoch+1}/{EPOCHS} | Train MSE: {avg_train_loss:.4f} | Val MSE: {avg_val_mse:.4f} | Val MAE: {avg_val_mae:.4f}s | Val Rel Error: {avg_val_rel_error:.1f}%")
-        
-        # Save Best Model (Based on MSE)
-        if avg_val_mse < best_val_loss:
-            best_val_loss = avg_val_mse
-            # torch.save(model.state_dict(), f"models/best_snn_trial_{trial.number}.pth")
-            torch.save({k: v.cpu() for k, v in model.state_dict().items()}, f"models/best_snn_trial_{trial.number}.pth")
-            print("  >>> Saved Best Model")
-            
-    total_time = time.time() - start_time
-    print(f"\nTrial {trial.number} Complete in {total_time/60:.1f} minutes.")
-    print(f"Best Val Loss: {best_val_loss:.4f}")
-    
-    # Plot Training Curve
-    plt.figure()
-    plt.plot(train_losses, label='Train Loss')
-    plt.plot(val_losses, label='Val Loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('MSE Loss')
-    plt.title(f'SNN Training Curve - Trial {trial.number}')
-    plt.legend()
-    plt.savefig(f'models/training_curve_trial_{trial.number}.png')
+        # Flags for console readability
+        improved_flag = " <<<" if avg_val_loss < best_val_loss else ""
+        print(
+            f"{epoch:>6} | {avg_train_loss:>10.4f} | {avg_val_loss:>9.4f} | "
+            f"{avg_val_mae:>9.4f} | {avg_val_rel:>8.1f}% | {current_lr:>10.2e}"
+            f"  [{epoch_time:.1f}s]{improved_flag}"
+        )
+
+        # Save best checkpoint
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            epochs_no_improve = 0
+            torch.save(
+                {
+                    "epoch":                epoch,
+                    "model_state_dict":     {k: v.cpu() for k, v in model.state_dict().items()},
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "val_loss":             best_val_loss,
+                    "val_mae":              avg_val_mae,
+                    "config":               config,
+                },
+                "models/best_snn.pth"
+            )
+        else:
+            epochs_no_improve += 1
+            if epochs_no_improve >= EARLY_STOP_PATIENCE:
+                print(f"\n  Early stopping triggered — no improvement for {EARLY_STOP_PATIENCE} epochs.")
+                break
+
+    total_time = time.time() - total_start
+    print("=" * 75)
+    print(f"Training complete in {total_time / 60:.1f} min")
+    print(f"Best Val Loss : {best_val_loss:.4f}")
+
+    # ---- Plot ----
+    epochs_ran = len(history["train_loss"])
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+
+    axes[0].plot(range(1, epochs_ran + 1), history["train_loss"], label="Train")
+    axes[0].plot(range(1, epochs_ran + 1), history["val_loss"],   label="Val")
+    axes[0].set_title("Huber Loss")
+    axes[0].set_xlabel("Epoch")
+    axes[0].legend()
+    axes[0].grid(True)
+
+    axes[1].plot(range(1, epochs_ran + 1), history["val_mae"],     color='orange', label="Val MAE")
+    axes[1].plot(range(1, epochs_ran + 1), history["val_rel_err"], color='red',    label="Val Rel Err %")
+    axes[1].set_title("Val MAE (s) & Rel Error (%)")
+    axes[1].set_xlabel("Epoch")
+    axes[1].legend()
+    axes[1].grid(True)
+
+    axes[2].plot(range(1, epochs_ran + 1), history["lr"], color='green')
+    axes[2].set_title("Learning Rate (Cosine Decay)")
+    axes[2].set_xlabel("Epoch")
+    axes[2].set_yscale("log")
+    axes[2].grid(True)
+
+    plt.tight_layout()
+    plt.savefig("models/training_curves.png", dpi=150)
     plt.close()
-    print(f"Training curve saved to models/training_curve_trial_{trial.number}.png")
+    print("Training curves saved to models/training_curves.png")
 
-    return best_val_loss
+    return history
 
+
+# -----------------------------------------------------------------------------
+# 5. Main
+# -----------------------------------------------------------------------------
 if __name__ == "__main__":
-    print("Starting Optuna Hyperparameter Search...")
-
-    # Create an Optuna study aiming to minimize the validation loss
-    study = optuna.create_study(direction="minimize")
-    
-    # Run 10 different combinations
-    study.optimize(objective, n_trials=30)
-    
-    print("\n=============================================")
-    print("Best Trial Found!")
-    print(f"  Best Val Loss: {study.best_trial.value}")
-    print("  Best Parameters:")
-    for key, value in study.best_trial.params.items():
-        print(f"    {key}: {value}")
+    train(CONFIG)

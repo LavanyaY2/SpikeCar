@@ -1,18 +1,15 @@
 #!/usr/bin/env python3
 """
 Process EvTTC dataset into training samples for Samsung DVS camera
-
 - takes the raw .hdf5 files from the EvTTC dataset
 - converts them into numpy arrays that the SNN can train on
 """
-
-import sys
-sys.path.insert(0, '..')
 
 import numpy as np
 import h5py
 import pandas as pd
 from pathlib import Path
+import matplotlib.pyplot as plt
 
 
 def load_events_from_hdf5(file_path):
@@ -73,7 +70,7 @@ def letterbox_events(events, target_width=640, target_height=480):
     width  = int(events['x'].max()) + 1
     height = int(events['y'].max()) + 1
 
-    scale     = min(target_width / width, target_height / height)
+    scale      = min(target_width / width, target_height / height)
     new_width  = int(np.floor(width  * scale))
     new_height = int(np.floor(height * scale))
     pad_x = (target_width  - new_width)  / 2.0
@@ -124,7 +121,7 @@ def load_and_resize_evttc(sequence_path, target_height=480, target_width=640):
     print(f"Letterbox: scale={info['scale']:.4f}, pad={info['pad']}, "
           f"orig={info['orig']}, scaled={info['scaled']}")
 
-    ttc_file = sequence_path / "ttc_groundtruth.csv"
+    ttc_file       = sequence_path / "ttc_groundtruth.csv"
     ttc_timestamps = None
 
     if not ttc_file.exists():
@@ -142,19 +139,18 @@ def load_and_resize_evttc(sequence_path, target_height=480, target_width=640):
 
 def create_timesurface(events, start_time, end_time, height, width, tau=0.01):
     time_surface = np.zeros((height, width), dtype=np.float32)
-    mask = (events['t'] >= start_time) & (events['t'] < end_time)
+    mask    = (events['t'] >= start_time) & (events['t'] < end_time)
     indices = np.where(mask)[0]
 
     if len(indices) == 0:
         return time_surface
 
-    # Vectorized — no Python loop over events
     t_arr = events['t'][indices].astype(np.float64)
     x_arr = events['x'][indices].astype(np.int32)
     y_arr = events['y'][indices].astype(np.int32)
     p_arr = events['p'][indices]
 
-    decay = np.exp(-(end_time - t_arr) / (tau * 1e6))
+    decay        = np.exp(-(end_time - t_arr) / (tau * 1e6))
     signed_decay = np.where(p_arr > 0, decay, -decay).astype(np.float32)
     np.add.at(time_surface, (y_arr, x_arr), signed_decay)
 
@@ -166,8 +162,7 @@ def create_temporal_bins(events, start_time, height, width, n_bins=5, bin_durati
     for i in range(n_bins):
         bin_start = start_time + i * bin_duration_us
         bin_end   = bin_start  + bin_duration_us
-        ts = create_timesurface(events, bin_start, bin_end, height, width)
-        bins.append(ts)
+        bins.append(create_timesurface(events, bin_start, bin_end, height, width))
     return np.stack(bins, axis=0)
 
 
@@ -179,18 +174,18 @@ def process_sequence(sequence_path, height=480, width=640):
         return [], []
 
     samples, labels = [], []
-    t_start = events['t'][0]
-    t_end   = events['t'][-1]
+    t_start  = events['t'][0]
+    t_end    = events['t'][-1]
     duration = t_end - t_start
 
     window_duration_us = 50_000
     stride_us          = 25_000
 
     print(f"\n Processing:")
-    print(f"Window: {window_duration_us/1000:.0f}ms, Stride: {stride_us/1000:.0f}ms")
-    print(f"Expected samples: ~{int((duration - window_duration_us) / stride_us)}")
+    print(f"  Window: {window_duration_us/1000:.0f}ms, Stride: {stride_us/1000:.0f}ms")
+    print(f"  Expected samples: ~{int((duration - window_duration_us) / stride_us)}")
 
-    t = int(t_start)
+    t              = int(t_start)
     sample_count   = 0
     filtered_count = 0
 
@@ -210,98 +205,43 @@ def process_sequence(sequence_path, height=480, width=640):
             ttc_idx   = min(int(ttc_idx), len(ttc_gt) - 1)
             ttc_value = ttc_gt[ttc_idx]
 
-            if 0.1 < ttc_value < 10.0:
+            # Replace with the two-tier approach
+            if ttc_value <= 0 or np.isinf(ttc_value) or np.isnan(ttc_value):
+                filtered_count += 1
+            else:
+                ttc_value = min(float(ttc_value), 10.0)
                 samples.append(bins)
                 labels.append(ttc_value)
                 sample_count += 1
-            else:
-                filtered_count += 1
 
         t += stride_us
 
-    print(f"Generated: {sample_count} samples, filtered: {filtered_count}")
+    print(f"  Generated: {sample_count} samples, filtered: {filtered_count}")
     return samples, labels
 
 
-def load_slider_events(sequence_path):
-    events_data = np.load(str(sequence_path / 'events.npz'))
-    ttc_data    = np.load(str(sequence_path / 'ttc_gt.npz'))
+# CHANGED: added dataset statistics plot saved alongside the .npy files
+def plot_label_distribution(y, split_name, output_dir):
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+    fig.suptitle(f'Label Distribution — {split_name} split', fontweight='bold')
 
-    events = {
-        't': events_data['t'].astype(np.float64),
-        'x': events_data['x'].astype(np.uint16),
-        'y': events_data['y'].astype(np.uint16),
-        'p': events_data['p'].astype(np.int8),
-    }
-    ttc_gt         = ttc_data['ttc'].astype(np.float32)
-    ttc_timestamps = ttc_data['t'].astype(np.float64) / 1e6  # μs → seconds
+    axes[0].hist(y, bins=50, color='steelblue', edgecolor='white', alpha=0.85)
+    axes[0].set_xlabel('TTC (s)'); axes[0].set_ylabel('Count')
+    axes[0].set_title('TTC Histogram'); axes[0].grid(True, alpha=0.3)
 
-    return events, ttc_gt, ttc_timestamps
+    axes[1].boxplot(y, vert=True, patch_artist=True,
+                    boxprops=dict(facecolor='steelblue', alpha=0.6))
+    axes[1].set_ylabel('TTC (s)'); axes[1].set_title('TTC Boxplot')
+    axes[1].grid(True, alpha=0.3)
 
-
-def process_slider_sequence(sequence_path, height=480, width=640):
-    print(f"\n{'='*60}")
-    print(f"Loading slider: {sequence_path.name}")
-    print('='*60)
-
-    events, ttc_gt, ttc_timestamps = load_slider_events(sequence_path)
-
-    print(f"Loaded {len(events['t']):,} events")
-    print(f"TTC msgs: {len(ttc_gt)}, range: [{ttc_gt.min():.2f}, {ttc_gt.max():.2f}]s")
-
-    orig_w = int(events['x'].max()) + 1
-    orig_h = int(events['y'].max()) + 1
-    print(f"Detected resolution: {orig_w}x{orig_h}")
-
-    if orig_w != width or orig_h != height:
-        print(f"Resizing {orig_w}x{orig_h} → {width}x{height}")
-        events, _ = letterbox_events(events, width, height)
-
-    t_start = events['t'][0]
-    t_end   = events['t'][-1]
-
-    # Align TTC timestamps to event stream timebase
-    # Both start independently at t=0 so offset is usually ~0,
-    # but we compute it explicitly to be safe
-    event_t_start_s = t_start / 1e6
-    ttc_t_start     = ttc_timestamps[0]
-    ttc_offset      = event_t_start_s - ttc_t_start
-    ttc_timestamps_aligned = ttc_timestamps + ttc_offset
-
-    print(f"TTC timestamp offset applied: {ttc_offset:.4f}s")
-    print(f"Valid TTC entries (>0.1s): {(ttc_gt > 0.1).sum()} / {len(ttc_gt)}")
-
-    window_duration_us = 50_000
-    stride_us          = 25_000
-
-    t = int(t_start)
-    samples, labels = [], []
-    sample_count   = 0
-    filtered_count = 0
-
-    while t + window_duration_us <= int(t_end):
-        bins = create_temporal_bins(events, t, height, width,
-                                    n_bins=5, bin_duration_us=10_000)
-
-        current_time_s = (t - t_start) / 1e6
-        ttc_idx   = int(np.argmin(np.abs(ttc_timestamps_aligned - current_time_s)))
-        ttc_idx   = min(ttc_idx, len(ttc_gt) - 1)
-        ttc_value = ttc_gt[ttc_idx]
-
-        if 0.1 < ttc_value < 5.0:
-            samples.append(bins)
-            labels.append(ttc_value)
-            sample_count += 1
-        else:
-            filtered_count += 1
-
-        t += stride_us
-
-    print(f"Generated: {sample_count} samples, filtered: {filtered_count}")
-    return samples, labels
+    fig.tight_layout()
+    fig.savefig(output_dir / f'label_dist_{split_name}.png', dpi=150)
+    plt.close(fig)
+    print(f"  Saved label distribution → {output_dir}/label_dist_{split_name}.png")
 
 
 def main():
+    
     print("\n" + "=" * 60)
     print("EvTTC Dataset Processing for Samsung DVS (640x480)")
     print("=" * 60)
@@ -310,19 +250,22 @@ def main():
         "train": [
             "CCRs-1-low-100%-ttc",
             "CCRs-1-medium-100%-ttc",
+            "CCRs-side-low-ttc",
         ],
         "val": [
             "CCRs-2-low-100%-ttc",
+            "CCRs-side-medium-ttc",
         ],
         "test": [
             "CCRs-3-low-100%-ttc",
+            "CCRs-3-medium-100%-ttc",
+            "CCRs-2-medium-100%-ttc",
         ],
     }
 
     output_dir = Path("data/processed")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- EvTTC splits ---
     for split_name, sequences in splits.items():
         print(f"\n\n{'='*20} Processing {split_name.upper()} split {'='*20}")
 
@@ -345,61 +288,28 @@ def main():
         y = np.array(all_labels,  dtype=np.float32)
 
         print("Normalizing samples...")
-        for i in range(len(X)):
-            s_max = np.abs(X[i]).max()
-            if s_max > 0:
-                X[i] /= s_max
+        s_max = np.abs(X).max(axis=(1, 2, 3), keepdims=True)
+        s_max[s_max == 0] = 1.0
+        X = X / s_max
 
         np.save(output_dir / f"X_{split_name}.npy", X)
         np.save(output_dir / f"y_{split_name}.npy", y)
 
+        # CHANGED: print percentile breakdown so you can see coverage across TTC range
         print(f"\nSUCCESS! Saved {len(X):,} {split_name} samples")
-        print(f"  Shape: {X.shape}")
-        print(f"  Size:  {X.nbytes / (1024**2):.1f} MB")
-        print(f"  TTC:   {y.mean():.2f}s ± {y.std():.2f}s")
+        print(f"  Shape : {X.shape}")
+        print(f"  Size  : {X.nbytes / (1024**2):.1f} MB")
+        print(f"  TTC   : mean={y.mean():.2f}s  std={y.std():.2f}s  "
+              f"min={y.min():.2f}s  max={y.max():.2f}s")
+        print(f"  Percentiles — "
+              f"p10={np.percentile(y,10):.2f}s  "
+              f"p25={np.percentile(y,25):.2f}s  "
+              f"p50={np.percentile(y,50):.2f}s  "
+              f"p75={np.percentile(y,75):.2f}s  "
+              f"p90={np.percentile(y,90):.2f}s")
 
-    # --- Slider sequences (saved separately, combined in DataLoader) ---
-    print("\n\n" + "="*20 + " Processing SLIDER sequences " + "="*20)
-
-    slider_sequences = [
-        Path("data/slider/Slider500"),
-        Path("data/slider/Slider750"),
-        Path("data/slider/Slider1000"),
-    ]
-
-    slider_samples, slider_labels = [], []
-    for seq_path in slider_sequences:
-        if seq_path.exists():
-            s, l = process_slider_sequence(seq_path)
-            slider_samples.extend(s)
-            slider_labels.extend(l)
-        else:
-            print(f"=> Not found: {seq_path}")
-
-    if slider_samples:
-        # 5x oversample — slider dataset is small relative to EvTTC
-        slider_samples = slider_samples * 5
-        slider_labels  = slider_labels  * 5
-
-        X_slider = np.array(slider_samples, dtype=np.float32)
-        y_slider = np.array(slider_labels,  dtype=np.float32)
-
-        print("Normalizing slider samples...")
-        for i in range(len(X_slider)):
-            s_max = np.abs(X_slider[i]).max()
-            if s_max > 0:
-                X_slider[i] /= s_max
-
-        # Save separately — avoids OOM from concatenating 5GB arrays in RAM
-        np.save(output_dir / 'X_slider.npy', X_slider)
-        np.save(output_dir / 'y_slider.npy', y_slider)
-
-        print(f"\nSlider saved: {len(X_slider)} samples (5x oversampled)")
-        print(f"  Shape: {X_slider.shape}")
-        print(f"  Size:  {X_slider.nbytes / (1024**2):.1f} MB")
-        print(f"  TTC:   {y_slider.min():.2f}s – {y_slider.max():.2f}s")
-    else:
-        print("=> No slider samples generated.")
+        # CHANGED: save label distribution plot per split
+        plot_label_distribution(y, split_name, output_dir)
 
 
 if __name__ == "__main__":
