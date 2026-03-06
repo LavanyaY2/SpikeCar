@@ -2,5 +2,4 @@ data/
 libcaer/
 .venv/
 __pycache__/
-*.pth
 *.pt
