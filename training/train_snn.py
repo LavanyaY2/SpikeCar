@@ -26,7 +26,7 @@ CONFIG = {
     "alpha":        2.0,     # ATan surrogate gradient sharpness
     "dropout_rate": 0.3,     # Dropout before FC layers
     "v_thresh":     1.0,     # LIF spike threshold
-    "huber_delta":  1.0,     # Huber loss delta (seconds) — transition point between L1 and L2
+    "huber_delta": 0.5,     # Huber loss delta (seconds) — transition point between L1 and L2
     "batch_size":   16,
     "epochs":       5,
     "time_steps":   5,

@@ -10,6 +10,7 @@ import h5py
 import pandas as pd
 from pathlib import Path
 import matplotlib.pyplot as plt
+import random
 
 
 def load_events_from_hdf5(file_path):
@@ -189,6 +190,13 @@ def process_sequence(sequence_path, height=480, width=640):
     sample_count   = 0
     filtered_count = 0
 
+    # Add this block right before the while loop
+    if ttc_gt is not None:
+        if ttc_timestamps is not None:
+            print("  TTC lookup: timestamp-based")
+        else:
+            print("  TTC lookup: WARNING — linear interpolation fallback (timestamps not found)")
+
     while t + window_duration_us <= int(t_end):
         bins = create_temporal_bins(events, t, height, width,
                                     n_bins=5, bin_duration_us=10_000)
@@ -209,12 +217,30 @@ def process_sequence(sequence_path, height=480, width=640):
             if ttc_value <= 0 or np.isinf(ttc_value) or np.isnan(ttc_value):
                 filtered_count += 1
             else:
-                ttc_value = min(float(ttc_value), 10.0)
+                ttc_value = min(float(ttc_value), 6.0)
                 samples.append(bins)
                 labels.append(ttc_value)
                 sample_count += 1
 
         t += stride_us
+
+    # Downsampling higher ttc samples
+    # After the while loop, before returning
+    if labels:
+        capped_idx   = [i for i, l in enumerate(labels) if l >= 5.99]
+        uncapped_idx = [i for i, l in enumerate(labels) if l <  5.99]
+        
+        keep_n      = int(len(capped_idx) * 0.3)
+        capped_keep = random.sample(capped_idx, keep_n)
+        
+        keep    = sorted(uncapped_idx + capped_keep)
+        samples = [samples[i] for i in keep]
+        labels  = [labels[i]  for i in keep]
+        
+        print(f"  After downsampling 6s cap: {len(samples)} samples "
+            f"({len(uncapped_idx)} uncapped + {len(capped_keep)} capped)")  # ← moved inside
+
+
 
     print(f"  Generated: {sample_count} samples, filtered: {filtered_count}")
     return samples, labels
@@ -250,16 +276,14 @@ def main():
         "train": [
             "CCRs-1-low-100%-ttc",
             "CCRs-1-medium-100%-ttc",
-            "CCRs-side-low-ttc",
+            "CCRs-2-medium-100%-ttc",
         ],
         "val": [
             "CCRs-2-low-100%-ttc",
-            "CCRs-side-medium-ttc",
         ],
         "test": [
             "CCRs-3-low-100%-ttc",
             "CCRs-3-medium-100%-ttc",
-            "CCRs-2-medium-100%-ttc",
         ],
     }
 
