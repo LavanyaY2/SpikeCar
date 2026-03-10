@@ -214,6 +214,7 @@ class MainView:
         self.last_event_count = 0
         self.last_tick_time   = time.time()
         self.tick_fps         = 0.0
+        self.last_latency_ms  = None   # pipeline latency: event receipt → brake decision
 
         if self.inferencer.enabled:
             self.statusbar.configure(
@@ -266,6 +267,8 @@ class MainView:
             raw_events = lib.get_recent_events()
 
             if raw_events is not None and len(raw_events['t']) >= 2:
+                t_frame_received = time.time()  # wall-clock when event batch is in hand
+
                 t_end           = int(raw_events['t'][-1])
                 t_start         = t_end - 50_000
                 bin_duration_us = 10_000
@@ -294,6 +297,9 @@ class MainView:
 
                 self.last_prediction = self.smoothed_ttc
 
+                # Latency = time from event batch receipt to brake decision being ready
+                self.last_latency_ms = (time.time() - t_frame_received) * 1000.0
+
         self.update_status()
         self.root.after(args.tick_ms, self.tick)
 
@@ -308,14 +314,16 @@ class MainView:
             )
             return
 
-        ttc   = max(self.last_prediction, 0.0)
-        state = 'COLLISION WARNING ⚠️' if ttc <= self.inferencer.collision_threshold else 'safe'
+        ttc     = max(self.last_prediction, 0.0)
+        state   = 'COLLISION WARNING ⚠️' if ttc <= self.inferencer.collision_threshold else 'safe'
+        lat_str = f'{self.last_latency_ms:.1f}ms' if self.last_latency_ms is not None else 'n/a'
         self.statusbar.configure(
             text=(
                 f'fps: {self.tick_fps:.1f} | '
                 f'events: {self.last_event_count} | '
                 f'pred TTC: {ttc:.2f}s | '
                 f'threshold: {self.inferencer.collision_threshold:.2f}s | '
+                f'latency: {lat_str} | '
                 f'state: {state}'
             )
         )
