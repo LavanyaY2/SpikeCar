@@ -1,1 +1,5 @@
-# spikecar_ttc
+# SpikeCar - Reflexive Braking using Neuromorphic Hardware
+
+Autonomous vehicles represent one of the most promising technologies for reducing traffic fatalities and transforming transportation safety. Traditional obstacle detection systems for autonomous vehicles rely on deep learning algorithms that are computationally expensive, power-hungry, and latency-prone. As autonomous vehicles scale to mass deployment, these limitations become critical barriers to widespread adoption and economic viability. The objective of this project is to design a low-latency, power-efficient obstacle detection system for autonomous vehicles that can operate effectively on resource-constrained platforms. 
+
+SpikeCar implements a Spiking Neural Network (SNN) for autonomous vehicle braking. Using an event-based camera that captures motion as asynchronous spikes rather than traditional frames, our physical car prototype detects obstacles ahead. The SNN, deployed on a Raspberry Pi, processes this event-driven visual data and triggers braking responses. This implementation demonstrates the low-latency processing potential of neuromorphic approaches for real-time collision avoidance.
